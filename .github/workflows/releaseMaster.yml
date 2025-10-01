@@ -1,12 +1,12 @@
 name: "[master] Release"
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - "master"
     paths:
       - "package.json"
+  workflow_dispatch:  # Allow manual triggering
 
 jobs:
   Build:
@@ -38,6 +38,14 @@ jobs:
           title: Release ${{ env.VERSION }}
           files: ./dist/luna.zip
 
+  Update-Hashes:
+    name: Update Nix Hashes
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' || 
+      (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    
+    steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -46,42 +54,80 @@ jobs:
       - name: Setup Nix
         uses: cachix/install-nix-action@v20
 
-      - name: Calculate source hash
-        id: source_hash
+      - name: Get current version
+        id: version
         run: |
-          # Calculate the actual hash of the current source
-          SOURCE_HASH=$(nix hash path .)
-          echo "source_hash=$SOURCE_HASH" >> $GITHUB_OUTPUT
-          echo "Calculated source hash: $SOURCE_HASH"
-
-      - name: Calculate pnpm deps hash
-        id: pnpm_hash
-        run: |
-          # Build the derivation to get the pnpm deps hash
-          PNPM_HASH=$(nix build .#injection --print-out-paths 2>&1 | grep -o 'got:.*' | cut -d':' -f2 | xargs || true)
-          if [ -z "$PNPM_HASH" ]; then
-            # If that fails, try a different approach
-            PNPM_HASH=$(nix eval .#injection.pnpmDeps.outputHash --raw 2>/dev/null || true)
+          if [ -f "package.json" ]; then
+            VERSION=$(jq -r .version package.json)
+          else
+            VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "1.6.13-beta")
           fi
-          echo "pnpm_hash=$PNPM_HASH" >> $GITHUB_OUTPUT
-          echo "Calculated pnpm hash: $PNPM_HASH"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using version: $VERSION"
+
+      - name: Build and extract correct hashes
+        id: extract_hashes
+        run: |
+          # First, remove the source hash to let Nix tell us the correct one
+          sed -i '/hash =/d' nix/package.nix
+          
+          # Try to build and capture the actual hashes from error messages
+          nix build .#injection 2>&1 | tee build.log || true
+          
+          # Extract the ACTUAL source hash (what fetchFromGitHub should use)
+          ACTUAL_SOURCE_HASH=$(grep -o "got:.*sha256-[a-zA-Z0-9+/]*=" build.log | head -1 | cut -d':' -f2 | xargs || echo "")
+          echo "actual_source_hash=$ACTUAL_SOURCE_HASH" >> $GITHUB_OUTPUT
+          echo "Actual source hash from build: $ACTUAL_SOURCE_HASH"
+          
+          # If we have the source hash, update the file and try to get pnpm hash
+          if [ -n "$ACTUAL_SOURCE_HASH" ]; then
+            # Update source hash
+            sed -i "s|src = fetchFromGitHub {|src = fetchFromGitHub {\n    hash = \"$ACTUAL_SOURCE_HASH\";|" nix/package.nix
+            
+            # Now try to build again to get pnpm deps hash
+            nix build .#injection 2>&1 | tee build2.log || true
+            
+            # Extract pnpm deps hash from the new error
+            PNPM_HASH=$(grep -o "got:.*sha256-[a-zA-Z0-9+/]*=" build2.log | head -1 | cut -d':' -f2 | xargs || echo "")
+            if [ -n "$PNPM_HASH" ]; then
+              echo "pnpm_hash=$PNPM_HASH" >> $GITHUB_OUTPUT
+              echo "PNPM deps hash: $PNPM_HASH"
+            else
+              # If no error, the build succeeded and we can extract the pnpm hash differently
+              echo "Build succeeded, extracting pnpm hash from derivation"
+              PNPM_HASH=$(nix eval .#injection.pnpmDeps.outputHash --raw 2>/dev/null || echo "")
+              echo "pnpm_hash=$PNPM_HASH" >> $GITHUB_OUTPUT
+            fi
+          fi
 
       - name: Update hashes in package.nix
         run: |
-          # Update the source hash
-          sed -i "s|hash = \"sha256-[a-zA-Z0-9+/]*=\";|hash = \"${{ steps.source_hash.outputs.source_hash }}\";|" nix/package.nix
+          echo "Updating package.nix with:"
+          echo "Source hash: ${{ steps.extract_hashes.outputs.actual_source_hash }}"
+          echo "PNPM hash: ${{ steps.extract_hashes.outputs.pnpm_hash }}"
           
-          # Update the pnpm deps hash if available
-          if [ -n "${{ steps.pnpm_hash.outputs.pnpm_hash }}" ]; then
-            sed -i "s|hash = \"sha256-[a-zA-Z0-9+/]*=\";|hash = \"${{ steps.pnpm_hash.outputs.pnpm_hash }}\";|" nix/package.nix
+          # Update source hash (should already be done, but ensure it's correct)
+          if [ -n "${{ steps.extract_hashes.outputs.actual_source_hash }}" ]; then
+            sed -i "s|hash = \"sha256-[a-zA-Z0-9+/]*=\";|hash = \"${{ steps.extract_hashes.outputs.actual_source_hash }}\";|" nix/package.nix
           fi
           
-          # Display the changes
+          # Update pnpm deps hash
+          if [ -n "${{ steps.extract_hashes.outputs.pnpm_hash }}" ]; then
+            sed -i "s|hash = \"sha256-[a-zA-Z0-9+/]*=\";|hash = \"${{ steps.extract_hashes.outputs.pnpm_hash }}\";|" nix/package.nix
+          fi
+          
           echo "Updated package.nix:"
           cat nix/package.nix
 
+      - name: Test the updated package.nix
+        run: |
+          echo "Testing if the package builds with updated hashes..."
+          nix build .#injection --print-build-logs && echo "✅ Build successful!" || echo "❌ Build failed"
+
       - name: Commit updated hashes
+        if: success()
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "ci: update nix hashes for ${{ env.VERSION }}"
+          commit_message: "ci: update nix hashes for ${{ steps.version.outputs.version }}"
           file_pattern: nix/package.nix
+          branch: ${{ github.head_ref || 'master' }}
