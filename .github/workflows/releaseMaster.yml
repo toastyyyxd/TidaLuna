@@ -68,56 +68,44 @@ jobs:
       - name: Build and extract correct hashes
         id: extract_hashes
         run: |
-          # First, remove the hashes to let Nix tell us the correct one
-          sed -i 's|hash = "[^"]*"|hash = ""|g' nix/package.nix
+          # Step 1: Get the source hash first
+          echo "Step 1: Getting source hash..."
           
-          # Try to build and capture the actual hashes from error messages
+          # Remove only the source hash
+          sed -i '/src = fetchFromGitHub {/,/}/ s|hash = "[^"]*"|hash = ""|' nix/package.nix
+          
+          # Build to get source hash error
           nix build .#injection 2>&1 | tee build.log || true
           
-          # Extract the source hash (what fetchFromGitHub should use)
-          ACTUAL_SOURCE_HASH=$(grep -o "got:.*sha256-[a-zA-Z0-9+/]*=" build.log | head -1 | cut -d':' -f2 | xargs || echo "")
+          # Extract the expected source hash
+          ACTUAL_SOURCE_HASH=$(grep -o "got:.*sha256-[a-zA-Z0-9+/]*=" build.log | head -1 | cut -d':' -f2 | xargs)
           echo "actual_source_hash=$ACTUAL_SOURCE_HASH" >> $GITHUB_OUTPUT
-          echo "Actual source hash from build: $ACTUAL_SOURCE_HASH"
+          echo "Source hash: $ACTUAL_SOURCE_HASH"
           
-          # If we have the source hash, update the file and try to get pnpm hash
-          if [ -n "$ACTUAL_SOURCE_HASH" ]; then
-            # Update source hash
-            sed -i "s|src = fetchFromGitHub {|src = fetchFromGitHub {\n    hash = \"$ACTUAL_SOURCE_HASH\";|" nix/package.nix
-            
-            # Now try to build again to get pnpm deps hash
-            nix build .#injection 2>&1 | tee build2.log || true
-            
-            # Extract pnpm deps hash from the new error
-            PNPM_HASH=$(grep -o "got:.*sha256-[a-zA-Z0-9+/]*=" build2.log | head -1 | cut -d':' -f2 | xargs || echo "")
-            if [ -n "$PNPM_HASH" ]; then
-              echo "pnpm_hash=$PNPM_HASH" >> $GITHUB_OUTPUT
-              echo "PNPM deps hash: $PNPM_HASH"
-            else
-              # If no error, the build succeeded and we can extract the pnpm hash differently
-              echo "Build succeeded, extracting pnpm hash from derivation"
-              PNPM_HASH=$(nix eval .#injection.pnpmDeps.outputHash --raw 2>/dev/null || echo "")
-              echo "pnpm_hash=$PNPM_HASH" >> $GITHUB_OUTPUT
-            fi
-          fi
-
-      - name: Update hashes in package.nix
-        run: |
-          echo "Updating package.nix with:"
-          echo "Source hash: ${{ steps.extract_hashes.outputs.actual_source_hash }}"
-          echo "PNPM hash: ${{ steps.extract_hashes.outputs.pnpm_hash }}"
+          # Step 2: Update source hash and get pnpm hash
+          echo "Step 2: Getting pnpm hash..."
           
           # Update source hash
-          if [ -n "${{ steps.extract_hashes.outputs.actual_source_hash }}" ]; then
-            sed -i '/src = fetchFromGitHub {/,/}/ s|hash = "[^"]*"|hash = "${{ steps.extract_hashes.outputs.actual_source_hash }}"|' nix/package.nix
-          fi
+          sed -i '/src = fetchFromGitHub {/,/}/ s|hash = ""|hash = "'"$ACTUAL_SOURCE_HASH"'"|' nix/package.nix
           
-          # Update pnpm deps hash
-          if [ -n "${{ steps.extract_hashes.outputs.pnpm_hash }}" ]; then
-            sed -i '/pnpmDeps = pnpm.fetchDeps {/,/}/ s|hash = "[^"]*"|hash = "${{ steps.extract_hashes.outputs.pnpm_hash }}"|' nix/package.nix
-          fi
+          # Remove pnpm hash
+          sed -i '/pnpmDeps = pnpm.fetchDeps {/,/}/ s|hash = "[^"]*"|hash = ""|' nix/package.nix
           
-          echo "Updated package.nix:"
-          cat nix/package.nix
+          # Build to get pnpm hash error
+          nix build .#injection 2>&1 | tee build2.log || true
+          
+          # Extract the expected pnpm hash
+          PNPM_HASH=$(grep -o "got:.*sha256-[a-zA-Z0-9+/]*=" build2.log | head -1 | cut -d':' -f2 | xargs)
+          echo "pnpm_hash=$PNPM_HASH" >> $GITHUB_OUTPUT
+          echo "PNPM hash: $PNPM_HASH"
+          
+          # Step 3: Update pnpm hash
+          echo "Step 3: Updating both hashes..."
+          
+          # Update pnpm hash
+          sed -i '/pnpmDeps = pnpm.fetchDeps {/,/}/ s|hash = ""|hash = "'"$PNPM_HASH"'"|' nix/package.nix
+          
+          echo "Hashes updated!"
 
       - name: Test the updated package.nix
         run: |
