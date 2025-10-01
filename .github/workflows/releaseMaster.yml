@@ -106,14 +106,24 @@ jobs:
           echo "Source hash: ${{ steps.extract_hashes.outputs.actual_source_hash }}"
           echo "PNPM hash: ${{ steps.extract_hashes.outputs.pnpm_hash }}"
           
-          # Update source hash (should already be done, but ensure it's correct)
+          # Update source hash (only in the src block)
           if [ -n "${{ steps.extract_hashes.outputs.actual_source_hash }}" ]; then
-            sed -i "s|hash = \"sha256-[a-zA-Z0-9+/]*=\";|hash = \"${{ steps.extract_hashes.outputs.actual_source_hash }}\";|" nix/package.nix
+            # First, ensure there's a hash line in the src block
+            if ! grep -q 'hash =' nix/package.nix; then
+              sed -i '/src = fetchFromGitHub {/a\    hash = "";' nix/package.nix
+            fi
+            # Now update the source hash
+            sed -i '/src = fetchFromGitHub {/,/}/ s/hash = "[^"]*"/hash = "${{ steps.extract_hashes.outputs.actual_source_hash }}"/' nix/package.nix
           fi
           
-          # Update pnpm deps hash
+          # Update pnpm deps hash (only in the pnpmDeps block)
           if [ -n "${{ steps.extract_hashes.outputs.pnpm_hash }}" ]; then
-            sed -i "s|hash = \"sha256-[a-zA-Z0-9+/]*=\";|hash = \"${{ steps.extract_hashes.outputs.pnpm_hash }}\";|" nix/package.nix
+            # First, ensure there's a hash line in the pnpmDeps block
+            if ! grep -q 'hash =' nix/package.nix; then
+              sed -i '/pnpmDeps = pnpm.fetchDeps {/a\    hash = "";' nix/package.nix
+            fi
+            # Now update the pnpm hash
+            sed -i '/pnpmDeps = pnpm.fetchDeps {/,/}/ s/hash = "[^"]*"/hash = "${{ steps.extract_hashes.outputs.pnpm_hash }}"/' nix/package.nix
           fi
           
           echo "Updated package.nix:"
