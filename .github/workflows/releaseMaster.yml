@@ -1,47 +1,86 @@
 name: "[master] Release"
 
 on:
- push:
-  branches:
-   - "master"
-  paths:
-   - "package.json"
+  push:
+    branches:
+      - "master"
+    paths:
+      - "package.json"
 
 jobs:
- Build:
-  uses: ./.github/workflows/build.yml
+  Build:
+    uses: ./.github/workflows/build.yml
 
- Release:
-  name: Release latest on GitHub
-  needs: Build
-  runs-on: ubuntu-latest
+  Release:
+    name: Release latest on GitHub
+    needs: Build
+    runs-on: ubuntu-latest
 
-  steps:
-   - name: Download All Artifacts
-     uses: actions/download-artifact@v4
-     with:
-      name: luna-artifacts
-      path: ./dist/
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: luna-artifacts
+          path: ./dist/
 
-   - name: Get version from package.json
-     run: |
-      VERSION=$(jq -r .version ./dist/package.json)
-      echo "VERSION=${VERSION}" >> $GITHUB_ENV
+      - name: Get version from package.json
+        run: |
+          VERSION=$(jq -r .version ./dist/package.json)
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
-   - name: Publish dev release on GitHub
-     uses: marvinpinto/action-automatic-releases@latest
-     with:
-      repo_token: ${{ secrets.GITHUB_TOKEN }}
-      automatic_release_tag: ${{ env.VERSION }}
-      prerelease: false
-      title: Release ${{ env.VERSION }}
-      files: ./dist/luna.zip
+      - name: Publish dev release on GitHub
+        uses: marvinpinto/action-automatic-releases@latest
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: ${{ env.VERSION }}
+          prerelease: false
+          title: Release ${{ env.VERSION }}
+          files: ./dist/luna.zip
 
-   - uses: actions/checkout@v3
-   - uses: cachix/install-nix-action@v18
-   - uses: workflow/nix-shell-action@v3
-     with:
-      packages: nix-update
-      script: |
-       nix-update --flake injection --version=unstable
-   - uses: stefanzweifel/git-auto-commit-action@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Nix
+        uses: cachix/install-nix-action@v20
+
+      - name: Calculate source hash
+        id: source_hash
+        run: |
+          # Calculate the actual hash of the current source
+          SOURCE_HASH=$(nix hash path .)
+          echo "source_hash=$SOURCE_HASH" >> $GITHUB_OUTPUT
+          echo "Calculated source hash: $SOURCE_HASH"
+
+      - name: Calculate pnpm deps hash
+        id: pnpm_hash
+        run: |
+          # Build the derivation to get the pnpm deps hash
+          PNPM_HASH=$(nix build .#injection --print-out-paths 2>&1 | grep -o 'got:.*' | cut -d':' -f2 | xargs || true)
+          if [ -z "$PNPM_HASH" ]; then
+            # If that fails, try a different approach
+            PNPM_HASH=$(nix eval .#injection.pnpmDeps.outputHash --raw 2>/dev/null || true)
+          fi
+          echo "pnpm_hash=$PNPM_HASH" >> $GITHUB_OUTPUT
+          echo "Calculated pnpm hash: $PNPM_HASH"
+
+      - name: Update hashes in package.nix
+        run: |
+          # Update the source hash
+          sed -i "s|hash = \"sha256-[a-zA-Z0-9+/]*=\";|hash = \"${{ steps.source_hash.outputs.source_hash }}\";|" nix/package.nix
+          
+          # Update the pnpm deps hash if available
+          if [ -n "${{ steps.pnpm_hash.outputs.pnpm_hash }}" ]; then
+            sed -i "s|hash = \"sha256-[a-zA-Z0-9+/]*=\";|hash = \"${{ steps.pnpm_hash.outputs.pnpm_hash }}\";|" nix/package.nix
+          fi
+          
+          # Display the changes
+          echo "Updated package.nix:"
+          cat nix/package.nix
+
+      - name: Commit updated hashes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "ci: update nix hashes for ${{ env.VERSION }}"
+          file_pattern: nix/package.nix
