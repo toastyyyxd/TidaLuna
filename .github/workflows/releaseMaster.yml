@@ -68,13 +68,13 @@ jobs:
       - name: Build and extract correct hashes
         id: extract_hashes
         run: |
-          # First, remove the source hash to let Nix tell us the correct one
-          sed -i '/hash =/d' nix/package.nix
+          # First, remove the hashes to let Nix tell us the correct one
+          sed -i 's|hash = "[^"]*"|hash = ""|g' nix/package.nix
           
           # Try to build and capture the actual hashes from error messages
           nix build .#injection 2>&1 | tee build.log || true
           
-          # Extract the ACTUAL source hash (what fetchFromGitHub should use)
+          # Extract the source hash (what fetchFromGitHub should use)
           ACTUAL_SOURCE_HASH=$(grep -o "got:.*sha256-[a-zA-Z0-9+/]*=" build.log | head -1 | cut -d':' -f2 | xargs || echo "")
           echo "actual_source_hash=$ACTUAL_SOURCE_HASH" >> $GITHUB_OUTPUT
           echo "Actual source hash from build: $ACTUAL_SOURCE_HASH"
@@ -106,23 +106,13 @@ jobs:
           echo "Source hash: ${{ steps.extract_hashes.outputs.actual_source_hash }}"
           echo "PNPM hash: ${{ steps.extract_hashes.outputs.pnpm_hash }}"
           
-          # Update source hash (only in the src block)
+          # Update source hash
           if [ -n "${{ steps.extract_hashes.outputs.actual_source_hash }}" ]; then
-            # First, ensure there's a hash line in the src block
-            if ! grep -q 'hash =' nix/package.nix; then
-              sed -i '/src = fetchFromGitHub {/a\    hash = "";' nix/package.nix
-            fi
-            # Now update the source hash using | as delimiter to avoid / conflicts
             sed -i '/src = fetchFromGitHub {/,/}/ s|hash = "[^"]*"|hash = "${{ steps.extract_hashes.outputs.actual_source_hash }}"|' nix/package.nix
           fi
           
-          # Update pnpm deps hash (only in the pnpmDeps block)
+          # Update pnpm deps hash
           if [ -n "${{ steps.extract_hashes.outputs.pnpm_hash }}" ]; then
-            # First, ensure there's a hash line in the pnpmDeps block
-            if ! grep -q 'hash =' nix/package.nix; then
-              sed -i '/pnpmDeps = pnpm.fetchDeps {/a\    hash = "";' nix/package.nix
-            fi
-            # Now update the pnpm hash using | as delimiter to avoid / conflicts
             sed -i '/pnpmDeps = pnpm.fetchDeps {/,/}/ s|hash = "[^"]*"|hash = "${{ steps.extract_hashes.outputs.pnpm_hash }}"|' nix/package.nix
           fi
           
@@ -132,7 +122,8 @@ jobs:
       - name: Test the updated package.nix
         run: |
           echo "Testing if the package builds with updated hashes..."
-          nix build .#injection --print-build-logs && echo "✅ Build successful!" || echo "❌ Build failed"
+          nix build .#injection --print-build-logs
+          echo "✅ Build successful!" # Exits before this if build fails
 
       - name: Commit updated hashes
         if: success()
