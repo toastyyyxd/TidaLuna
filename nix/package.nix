@@ -4,10 +4,10 @@ stdenv.mkDerivation (finalAttrs: rec {
   pname = "${name}";
   version = "1.6.13-beta";
   src = fetchFromGitHub {
-    hash = "sha256-xtVM8h1V3LyYmTBnKRzJEReq2jJVFHunRnzQIne7YAo=";
     owner = "Inrixia";
     repo = "${name}";
     rev = "${version}";
+    hash = "sha256-j5eZv53/bJ41oqtG6BrppvT0kV3AMkMbxWhpmm/sCss=";
   };
 
   nativeBuildInputs = [
@@ -17,6 +17,7 @@ stdenv.mkDerivation (finalAttrs: rec {
 
   pnpmDeps = pnpm.fetchDeps {
     inherit (finalAttrs) pname src version;
+    hash = "sha256-TgltrHQBN/7U1bfskHhex4bTqWD5kuPVU4LYTqiK/mc=";
   };
 
   buildPhase = ''
