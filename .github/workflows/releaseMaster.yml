@@ -112,8 +112,8 @@ jobs:
             if ! grep -q 'hash =' nix/package.nix; then
               sed -i '/src = fetchFromGitHub {/a\    hash = "";' nix/package.nix
             fi
-            # Now update the source hash
-            sed -i '/src = fetchFromGitHub {/,/}/ s/hash = "[^"]*"/hash = "${{ steps.extract_hashes.outputs.actual_source_hash }}"/' nix/package.nix
+            # Now update the source hash using | as delimiter to avoid / conflicts
+            sed -i '/src = fetchFromGitHub {/,/}/ s|hash = "[^"]*"|hash = "${{ steps.extract_hashes.outputs.actual_source_hash }}"|' nix/package.nix
           fi
           
           # Update pnpm deps hash (only in the pnpmDeps block)
@@ -122,8 +122,8 @@ jobs:
             if ! grep -q 'hash =' nix/package.nix; then
               sed -i '/pnpmDeps = pnpm.fetchDeps {/a\    hash = "";' nix/package.nix
             fi
-            # Now update the pnpm hash
-            sed -i '/pnpmDeps = pnpm.fetchDeps {/,/}/ s/hash = "[^"]*"/hash = "${{ steps.extract_hashes.outputs.pnpm_hash }}"/' nix/package.nix
+            # Now update the pnpm hash using | as delimiter to avoid / conflicts
+            sed -i '/pnpmDeps = pnpm.fetchDeps {/,/}/ s|hash = "[^"]*"|hash = "${{ steps.extract_hashes.outputs.pnpm_hash }}"|' nix/package.nix
           fi
           
           echo "Updated package.nix:"
